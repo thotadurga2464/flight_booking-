@@ -1,13 +1,16 @@
--- Use the database
+-- Use database
 USE FlightS_booking;
 
--- Drop in correct order
+-- Drop tables if they exist (clean slate)
 DROP TABLE IF EXISTS bookings;
 DROP TABLE IF EXISTS passengers;
 DROP TABLE IF EXISTS Flight;
 DROP TABLE IF EXISTS airports;
+DROP TABLE IF EXISTS fare_history;
 
--- Create airports table
+-- ==============================================================
+-- 1) Airports table
+-- ==============================================================
 CREATE TABLE airports (
     airport_id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -16,14 +19,16 @@ CREATE TABLE airports (
     iata_code CHAR(3) NOT NULL UNIQUE
 );
 
--- Insert airport records
+-- Sample airports
 INSERT INTO airports (name, city, country, iata_code)
 VALUES 
 ('Indira Gandhi International Airport', 'Delhi', 'India', 'DEL'),
 ('Chhatrapati Shivaji Maharaj International Airport', 'Mumbai', 'India', 'BOM'),
 ('Chennai International Airport', 'Chennai', 'India', 'MAA');
 
--- Create Flight table
+-- ==============================================================
+-- 2) Flight table
+-- ==============================================================
 CREATE TABLE Flight (
     Flight_id INT AUTO_INCREMENT PRIMARY KEY,
     Flight_no VARCHAR(10) NOT NULL UNIQUE,
@@ -32,25 +37,21 @@ CREATE TABLE Flight (
     departure DATETIME,
     arrival DATETIME,
     base_fare DECIMAL(10, 2) DEFAULT 5000.00,
-    total_seats INT,
+    total_seats INT CHECK (total_seats >= 0),
     seats_available INT CHECK (seats_available >= 0),
     airline_name VARCHAR(50)
 );
 
--- Insert flight records
+-- Sample flights
 INSERT INTO Flight (Flight_no, origin, destination, departure, arrival, base_fare, total_seats, seats_available, airline_name)
 VALUES 
-('AI1', 'Delhi', 'Mumbai', '2025-03-01 10:00:00', '2025-03-01 12:00:00', 8000.00, 200, 150, 'Air India'),
-('AI2', 'Mumbai', 'Delhi', '2025-03-01 15:00:00', '2025-03-01 17:00:00', 8000.00, 200, 200, 'Air India'),
-('AI3', 'Delhi', 'Chennai', '2025-03-01 09:00:00', '2025-03-01 11:30:00', 9000.00, 200, 180, 'Air India'),
-('AI4', 'Chennai', 'Delhi', '2025-03-01 13:00:00', '2025-03-01 15:30:00', 9000.00, 200, 200, 'Air India'),
-('AI5', 'Mumbai', 'Chennai', '2025-03-01 12:00:00', '2025-03-01 14:30:00', 6000.00, 200, 160, 'Air India'),
-('AI6', 'Chennai', 'Mumbai', '2025-03-01 16:00:00', '2025-03-01 18:30:00', 7000.00, 200, 200, 'Air India');
+('AI101', 'Delhi', 'Mumbai', NOW() + INTERVAL 2 DAY, NOW() + INTERVAL 2 DAY + INTERVAL 2 HOUR, 5000.00, 100, 100, 'Air India'),
+('AI102', 'Bangalore', 'Chennai', NOW() + INTERVAL 3 DAY, NOW() + INTERVAL 3 DAY + INTERVAL 1 HOUR + INTERVAL 30 MINUTE, 4500.00, 120, 120, 'Air India Premium'),
+('AI103', 'Mumbai', 'Kolkata', NOW() + INTERVAL 4 DAY, NOW() + INTERVAL 4 DAY + INTERVAL 3 HOUR, 6000.00, 150, 150, 'Air India');
 
--- Update available seats on Flight ID 6
-UPDATE Flight SET seats_available = 300 WHERE Flight_id = 6;
-
--- Create passengers table
+-- ==============================================================
+-- 3) Passengers table
+-- ==============================================================
 CREATE TABLE passengers (
     passenger_id INT AUTO_INCREMENT PRIMARY KEY,
     full_name VARCHAR(100) NOT NULL,
@@ -59,7 +60,7 @@ CREATE TABLE passengers (
     city VARCHAR(50)
 );
 
--- Insert passengers
+-- Sample passengers
 INSERT INTO passengers (full_name, contact_number, email, city)
 VALUES 
 ('Alice Johnson', '1234567890', 'alice@example.com', 'Delhi'),
@@ -68,73 +69,131 @@ VALUES
 ('David Kumar', '9988776655', 'david@example.com', 'Hyderabad'),
 ('Eva Thomas', '9911223344', 'eva@example.com', 'Bangalore');
 
--- Create bookings table
+-- ==============================================================
+-- 4) Bookings table (backend-compatible)
+-- ==============================================================
 CREATE TABLE bookings (
     booking_id INT AUTO_INCREMENT PRIMARY KEY,
-    trans_id VARCHAR(20),
+    trans_id VARCHAR(50),
     flight_no VARCHAR(10),
-    origin VARCHAR(50),
-    destination VARCHAR(50),
-    passenger_fullname VARCHAR(50) NOT NULL,
+    flight_id INT,
+    passenger_fullname VARCHAR(100) NOT NULL,
     passenger_contact VARCHAR(20),
     seat_no INT,
-    FOREIGN KEY (flight_no) REFERENCES Flight(Flight_no)
+    pnr VARCHAR(16) UNIQUE,
+    status VARCHAR(30) DEFAULT 'Pending',
+    price DECIMAL(12,2),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (flight_no) REFERENCES Flight(Flight_no),
+    FOREIGN KEY (flight_id) REFERENCES Flight(Flight_id)
 );
 
--- Insert bookings
-INSERT INTO bookings (trans_id, flight_no, origin, destination, passenger_fullname, passenger_contact, seat_no)
+-- Sample bookings
+INSERT INTO bookings (trans_id, flight_no, flight_id, passenger_fullname, passenger_contact, seat_no, pnr, status, price)
 VALUES 
-('IC145', 'AI1', 'Delhi', 'Mumbai', 'Alice Johnson', '1234567890', 12),
-('AB123', 'AI2', 'Mumbai', 'Delhi', 'Bob Smith', '9876543210', 6),
-('TC078', 'AI3', 'Delhi', 'Chennai', 'Jack Lee', '8753092837', 24);
+('IC145', 'AI101', 1, 'Alice Johnson', '1234567890', 12, 'PNR001', 'Confirmed', 5200.00),
+('AB123', 'AI102', 2, 'Bob Smith', '9876543210', 6, 'PNR002', 'Confirmed', 4600.00),
+('TC078', 'AI103', 3, 'Jack Lee', '8753092837', 24, 'PNR003', 'Confirmed', 6100.00);
 
--- JOINS
+-- ==============================================================
+-- 5) Fare History table (dynamic pricing)
+-- ==============================================================
+CREATE TABLE fare_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    flight_no VARCHAR(10),
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fare DECIMAL(20,2)
+);
 
--- 1. INNER JOIN
-SELECT b.passenger_fullname, f.Flight_no, f.origin, f.destination
-FROM bookings b
-INNER JOIN Flight f ON b.flight_no = f.Flight_no;
+-- Sample fare history
+INSERT INTO fare_history (flight_no, fare)
+VALUES 
+('AI101', 5200.00),
+('AI102', 4600.00),
+('AI103', 6100.00);
 
--- 2. LEFT JOIN
-SELECT f.Flight_no, f.origin, f.destination, b.passenger_fullname
-FROM Flight f
-LEFT JOIN bookings b ON f.Flight_no = b.flight_no;
-
--- 3. RIGHT JOIN (requires latest MySQL or workaround with UNION)
-SELECT b.passenger_fullname, f.Flight_no
-FROM bookings b
-RIGHT JOIN Flight f ON b.flight_no = f.Flight_no;
-
--- 4. FULL OUTER JOIN simulation using UNION
-SELECT f.Flight_no, b.passenger_fullname
-FROM Flight f
-LEFT JOIN bookings b ON f.Flight_no = b.flight_no
-UNION
-SELECT f.Flight_no, b.passenger_fullname
-FROM bookings b
-RIGHT JOIN Flight f ON b.flight_no = f.Flight_no;
-
-
+-- ==============================================================
+-- 6) Transactions example
+-- ==============================================================
 START TRANSACTION;
 
--- Check current seats
-SELECT seats_available FROM Flight WHERE Flight_id = 1;
-
--- Deduct 1 seat
+-- Deduct a seat from a flight
 UPDATE Flight
 SET seats_available = seats_available - 1
-WHERE Flight_id = 1;
+WHERE Flight_no = 'AI101';
 
--- Add new booking
-INSERT INTO bookings (trans_id, flight_no, origin, destination, passenger_fullname, passenger_contact, seat_no)
-VALUES ('XY789', 'AI1', 'Delhi', 'Mumbai', 'David Kumar', '9988776655', 22);
+-- Add a new booking
+INSERT INTO bookings (trans_id, flight_no, flight_id, passenger_fullname, passenger_contact, seat_no, pnr, status, price)
+VALUES ('XY789', 'AI101', 1, 'David Kumar', '9988776655', 22, 'PNR004', 'Reserved', 5300.00);
 
 COMMIT;
 
--- Final check
+-- ==============================================================
+-- 7) Useful queries with joins (practice)
+-- ==============================================================
+
+-- a) Flights with seats available
+SELECT Flight_no, origin, destination, departure, arrival, seats_available
+FROM Flight
+WHERE seats_available > 0
+ORDER BY departure ASC;
+
+-- b) Passengers on a specific flight
+SELECT passenger_fullname, passenger_contact, seat_no
+FROM bookings
+WHERE flight_no = 'AI101';
+
+-- c) Total booked seats per flight
+SELECT f.Flight_no, f.total_seats, COUNT(b.booking_id) AS booked_seats
+FROM Flight f
+LEFT JOIN bookings b ON f.Flight_no = b.flight_no
+GROUP BY f.Flight_no, f.total_seats;
+
+-- d) Flights per airline
+SELECT airline_name, COUNT(*) AS total_flights
+FROM Flight
+GROUP BY airline_name;
+
+-- e) Flights with no bookings yet
+SELECT f.Flight_no, f.origin, f.destination
+FROM Flight f
+LEFT JOIN bookings b ON f.Flight_no = b.flight_no
+WHERE b.booking_id IS NULL;
+
+-- f) Last 5 bookings
+SELECT * FROM bookings ORDER BY booking_id DESC LIMIT 5;
+
+-- g) Flights departing in the next 3 days
+SELECT Flight_no, origin, destination, departure
+FROM Flight
+WHERE departure BETWEEN NOW() AND NOW() + INTERVAL 3 DAY;
+
+-- h) Join bookings with flight info
+SELECT b.passenger_fullname, b.seat_no, b.status, b.price, f.Flight_no, f.origin, f.destination, f.departure, f.arrival
+FROM bookings b
+INNER JOIN Flight f ON b.flight_no = f.Flight_no;
+
+-- i) Check remaining seats per flight
+SELECT Flight_no, total_seats, seats_available, (total_seats - seats_available) AS booked_seats
+FROM Flight;
+
+-- j) Join bookings with passengers info
+SELECT b.passenger_fullname, b.seat_no, b.status, p.contact_number, p.email, p.city, f.Flight_no, f.origin, f.destination
+FROM bookings b
+INNER JOIN passengers p ON b.passenger_fullname = p.full_name
+INNER JOIN Flight f ON b.flight_no = f.Flight_no;
+
+-- k) Fare history for flights
+SELECT f.Flight_no, fh.timestamp, fh.fare
+FROM Flight f
+LEFT JOIN fare_history fh ON f.Flight_no = fh.flight_no
+ORDER BY fh.timestamp DESC;
+
+-- ==============================================================
+-- 8) Optional final check
+-- ==============================================================
 SELECT * FROM airports;
 SELECT * FROM Flight;
 SELECT * FROM passengers;
 SELECT * FROM bookings;
-
-
+SELECT * FROM fare_history;
