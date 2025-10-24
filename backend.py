@@ -1,10 +1,10 @@
 # backend.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, DECIMAL, ForeignKey, func
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-import random, threading, time, decimal
+import random, threading, time, decimal, uuid, string
 from typing import List, Optional
 
 # -------------------------------
@@ -21,7 +21,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 # -------------------------------
-# MODELS
+# MODELS (updated for milestone)
 # -------------------------------
 class Flight(Base):
     __tablename__ = "Flight"
@@ -39,13 +39,17 @@ class Flight(Base):
 class Booking(Base):
     __tablename__ = "bookings"
     booking_id = Column(Integer, primary_key=True, autoincrement=True)
-    trans_id = Column(String(20))
-    flight_no = Column(String(10), ForeignKey("Flight.Flight_no"))
-    origin = Column(String(50))
-    destination = Column(String(50))
-    passenger_fullname = Column(String(50), nullable=False)
-    passenger_contact = Column(String(20))
+    trans_id = Column(String(50), nullable=True)
+    flight_no = Column(String(10), ForeignKey("Flight.Flight_no"), nullable=True)
+    # new fields for milestone:
+    flight_id = Column(Integer, ForeignKey("Flight.Flight_id"), nullable=True)
+    passenger_fullname = Column(String(100), nullable=False)
+    passenger_contact = Column(String(20), nullable=True)
     seat_no = Column(Integer)
+    pnr = Column(String(16), unique=True, nullable=True)
+    status = Column(String(30), default="Pending")  # Pending, Reserved, Confirmed, Cancelled, Payment Failed
+    price = Column(DECIMAL(12,2), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class FareHistory(Base):
     __tablename__ = "fare_history"
@@ -57,7 +61,7 @@ class FareHistory(Base):
 Base.metadata.create_all(engine)
 
 # -------------------------------
-# SCHEMAS
+# Pydantic Schemas
 # -------------------------------
 class FlightCreateSchema(BaseModel):
     Flight_no: str = Field(..., max_length=10)
@@ -76,17 +80,33 @@ class FlightOutSchema(FlightCreateSchema):
         from_attributes = True
 
 class BookingCreate(BaseModel):
-    trans_id: str
+    flight_id: int
+    seat_no: int = Field(..., ge=1)
+    passenger_fullname: str
+    passenger_contact: Optional[str] = None
+    trans_id: Optional[str] = None
+
+class BookingReserveOut(BaseModel):
+    pnr: str
+    flight_id: int
+    flight_no: str
+    seat_no: int
+    status: str
+    message: str
+
+class BookingOutSchema(BaseModel):
+    trans_id: Optional[str]
     flight_no: str
     passenger_fullname: str
-    passenger_contact: str
-    seat_no: int = Field(..., ge=1)
-
-class BookingOutSchema(BookingCreate):
-    origin: str
-    destination: str
+    passenger_contact: Optional[str]
+    seat_no: int
+    origin: Optional[str]
+    destination: Optional[str]
+    pnr: Optional[str]
+    status: Optional[str]
+    price: Optional[float]
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 class FlightSearchSchema(BaseModel):
     origin: Optional[str] = None
@@ -94,56 +114,36 @@ class FlightSearchSchema(BaseModel):
     date: Optional[datetime] = None
     sort_by: Optional[str] = None
 
-class AirlineScheduleSchema(BaseModel):
-    origin: str
-    destination: str
-    airline_name: Optional[str] = None
-
-# POST schema for external airline schedule
-class AirlineSchedulePostSchema(BaseModel):
-    origin: str
-    destination: str
-    airline_name: Optional[str] = None
-
 class FlightNoSchema(BaseModel):
     flight_no: str
     limit: Optional[int] = 10
 
-# POST schema for fare history
 class FareHistoryPostSchema(BaseModel):
     flight_no: str
     limit: Optional[int] = 10
-
-class PricingOutSchema(BaseModel):
-    flight_no: str
-    dynamic_price: float
 
 class FareHistoryOutSchema(BaseModel):
     timestamp: datetime
     fare: float
 
-class ExternalFlightSchema(BaseModel):
-    external_flight_no: str
-    origin: str
-    destination: str
-    departure: str
-    arrival: str
-    available_seats: int
-    price: float
-    airline_name: str
+# -------------------------------
+# UTILITIES
+# -------------------------------
+def generate_pnr(length: int = 6) -> str:
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
 
-class ExternalScheduleOutSchema(BaseModel):
-    provider: str
-    results: List[ExternalFlightSchema]
+def generate_trans_id() -> str:
+    return str(uuid.uuid4()).replace('-', '')[:20]
 
 # -------------------------------
-# DYNAMIC PRICING
+# DYNAMIC PRICING (kept from your code)
 # -------------------------------
 def calculate_dynamic_price(base_fare, seats_available, total_seats, departure, airline_name="standard"):
     base = float(base_fare) if not isinstance(base_fare, float) else base_fare
     seat_ratio = seats_available / total_seats if total_seats else 0
     seat_factor = 0.4 * (1 - seat_ratio)
-    days = (departure - datetime.now()).total_seconds() / 86400
+    days = (departure - datetime.now()).total_seconds() / 86400 if departure else 0
     if days <= 0: time_factor = 0.6
     elif days <= 1: time_factor = 0.4
     elif days <= 3: time_factor = 0.2
@@ -155,12 +155,22 @@ def calculate_dynamic_price(base_fare, seats_available, total_seats, departure, 
     return max(round(base * total_multiplier, 2), 50.0)
 
 # -------------------------------
-# FASTAPI APP
+# DEPENDENCY
 # -------------------------------
-app = FastAPI(title="Flight Booking API", version="1.4")
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # -------------------------------
-# MARKET SIMULATOR
+# FASTAPI APP
+# -------------------------------
+app = FastAPI(title="Flight Booking API", version="1.4-milestone3")
+
+# -------------------------------
+# MARKET SIMULATOR (kept)
 # -------------------------------
 def simulate_market_loop(interval_seconds: int = 60):
     while True:
@@ -168,8 +178,8 @@ def simulate_market_loop(interval_seconds: int = 60):
         try:
             for f in db.query(Flight).all():
                 change = random.choice([-3,-2,-1,0,1,2])
-                f.seats_available = max(0, min(f.total_seats, f.seats_available + change))
-                dp = calculate_dynamic_price(f.base_fare, f.seats_available, f.total_seats, f.departure, f.airline_name)
+                f.seats_available = max(0, min(f.total_seats, (f.seats_available or 0) + change))
+                dp = calculate_dynamic_price(f.base_fare, f.seats_available or 0, f.total_seats or 1, f.departure, f.airline_name or "")
                 db.add(FareHistory(flight_no=f.Flight_no, fare=decimal.Decimal(str(dp)), timestamp=datetime.utcnow()))
             db.commit()
         except Exception as e:
@@ -182,7 +192,7 @@ def simulate_market_loop(interval_seconds: int = 60):
 threading.Thread(target=simulate_market_loop, args=(30,), daemon=True).start()
 
 # -------------------------------
-# SAMPLE FLIGHTS & FARES
+# SAMPLE FLIGHTS & FARES (kept)
 # -------------------------------
 def insert_sample_flights():
     db = SessionLocal()
@@ -212,7 +222,7 @@ def insert_initial_fares():
     try:
         for f in db.query(Flight).all():
             if not db.query(FareHistory).filter(FareHistory.flight_no==f.Flight_no).first():
-                dp = calculate_dynamic_price(f.base_fare, f.seats_available, f.total_seats, f.departure, f.airline_name)
+                dp = calculate_dynamic_price(f.base_fare, f.seats_available or 0, f.total_seats or 1, f.departure, f.airline_name or "")
                 db.add(FareHistory(flight_no=f.Flight_no, fare=decimal.Decimal(str(dp)), timestamp=datetime.utcnow()))
         db.commit()
     finally:
@@ -222,54 +232,11 @@ insert_sample_flights()
 insert_initial_fares()
 
 # -------------------------------
-# HELPER FUNCTIONS
-# -------------------------------
-def _search_flights(origin, destination, date, sort_by):
-    db = SessionLocal()
-    q = db.query(Flight)
-    if origin: q = q.filter(func.lower(Flight.origin)==origin.lower())
-    if destination: q = q.filter(func.lower(Flight.destination)==destination.lower())
-    if date:
-        start, end = datetime(date.year,date.month,date.day), datetime(date.year,date.month,date.day)+timedelta(days=1)
-        q = q.filter(Flight.departure>=start, Flight.departure<end)
-    flights = q.all()
-    out = []
-    for f in flights:
-        dp = calculate_dynamic_price(f.base_fare, f.seats_available, f.total_seats, f.departure, f.airline_name)
-        duration = (f.arrival-f.departure).total_seconds() if f.arrival and f.departure else None
-        out.append({**f.__dict__, "dynamic_price": dp, "duration_seconds": duration})
-    if sort_by=="price": out.sort(key=lambda x: x["dynamic_price"])
-    elif sort_by=="duration": out.sort(key=lambda x: x["duration_seconds"] or float("inf"))
-    results = [FlightOutSchema(**{k:v for k,v in item.items() if k in FlightOutSchema.__fields__}) for item in out]
-    db.close()
-    return results
-
-def external_schedule_mock(origin: str, destination: str, airline_name: Optional[str] = None):
-    airlines = ["Air India", "IndiGo", "Vistara", "SpiceJet"]
-    results = []
-    for i in range(3):
-        dep = datetime.utcnow() + timedelta(hours=4+i*3)
-        arr = dep + timedelta(hours=random.choice([1,2,2.5,3]))
-        airline = airline_name if airline_name else random.choice(airlines)
-        results.append({
-            "external_flight_no": f"{airline[:2].upper()}{random.randint(100,999)}",
-            "origin": origin, "destination": destination,
-            "departure": dep.isoformat(), "arrival": arr.isoformat(),
-            "available_seats": random.randint(10,100),
-            "price": round(random.uniform(3000,10000),2),
-            "airline_name": airline
-        })
-    return {"provider":"mock-airline","results":results}
-
-# -------------------------------
-# ENDPOINTS
+# BASIC ENDPOINTS (kept)
 # -------------------------------
 @app.get("/")
 def root(): return {"message":"Flight Booking API running"}
-@app.post("/") 
-def root_post(): return {"message":"Flight Booking API running"}
 
-# Flights
 @app.get("/flights/", response_model=List[FlightOutSchema])
 def list_flights(): 
     db = SessionLocal()
@@ -278,40 +245,12 @@ def list_flights():
         Flight_no=f.Flight_no, origin=f.origin, destination=f.destination,
         departure=f.departure, arrival=f.arrival, base_fare=float(f.base_fare),
         total_seats=f.total_seats, seats_available=f.seats_available,
-        airline_name=f.airline_name, dynamic_price=calculate_dynamic_price(f.base_fare, f.seats_available, f.total_seats, f.departure, f.airline_name)
+        airline_name=f.airline_name, dynamic_price=calculate_dynamic_price(f.base_fare, f.seats_available or 0, f.total_seats or 1, f.departure, f.airline_name or "")
     ) for f in flights]
     db.close()
     return out
 
-@app.post("/flights/list", response_model=List[FlightOutSchema])
-def list_flights_post(): return list_flights()
-
-@app.post("/flights/", response_model=FlightOutSchema)
-def create_flight_post(f: FlightCreateSchema):
-    db = SessionLocal()
-    if db.query(Flight).filter(Flight.Flight_no==f.Flight_no).first():
-        db.close(); raise HTTPException(400,"Flight number exists")
-    new = Flight(**f.dict())
-    db.add(new); db.commit(); db.refresh(new)
-    dp = calculate_dynamic_price(new.base_fare, new.seats_available, new.total_seats, new.departure, new.airline_name)
-    db.add(FareHistory(flight_no=new.Flight_no, fare=decimal.Decimal(str(dp)), timestamp=datetime.utcnow()))
-    db.commit(); db.close()
-    return FlightOutSchema(**{**f.dict(), "dynamic_price": dp})
-
-@app.get("/flights/search", response_model=List[FlightOutSchema])
-def search_flights_get(origin: Optional[str]=None, destination: Optional[str]=None, date: Optional[datetime]=None, sort_by: Optional[str]=None):
-    return _search_flights(origin,destination,date,sort_by)
-
-@app.post("/flights/search", response_model=List[FlightOutSchema])
-def search_flights_post(payload: FlightSearchSchema):
-    return _search_flights(payload.origin,payload.destination,payload.date,payload.sort_by)
-
-# Pricing
-from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
-
-# Updated schema for pricing + flight info
+# pricing endpoint (kept)
 class FlightPricingOutSchema(BaseModel):
     Flight_no: str
     origin: str
@@ -323,19 +262,17 @@ class FlightPricingOutSchema(BaseModel):
     seats_available: int
     airline_name: str
     dynamic_price: float
-
     class Config:
         from_attributes = True
 
-# Updated endpoint
 @app.get("/pricing/{flight_no}", response_model=FlightPricingOutSchema)
 def get_pricing(flight_no: str):
     db = SessionLocal()
     f = db.query(Flight).filter(Flight.Flight_no==flight_no).first()
     if not f:
         db.close()
-        raise HTTPException(404,"Flight not found")
-    dp = calculate_dynamic_price(f.base_fare, f.seats_available, f.total_seats, f.departure, f.airline_name)
+        raise HTTPException(status_code=404, detail="Flight not found")
+    dp = calculate_dynamic_price(f.base_fare, f.seats_available or 0, f.total_seats or 1, f.departure, f.airline_name or "")
     db.close()
     return FlightPricingOutSchema(
         Flight_no=f.Flight_no,
@@ -350,67 +287,210 @@ def get_pricing(flight_no: str):
         dynamic_price=dp
     )
 
-@app.post("/pricing", response_model=FlightPricingOutSchema)
-def get_pricing_post(payload: FlightNoSchema):
-    return get_pricing(payload.flight_no)
+# -------------------------------
+# BOOKING WORKFLOW (Milestone 3)
+# -------------------------------
 
-# Bookings
+# 1) Reserve a seat (concurrency-safe) -> creates booking with status "Reserved" and returns PNR
+@app.post("/booking/reserve", response_model=BookingReserveOut)
+def reserve_booking(payload: BookingCreate, db: Session = Depends(get_db)):
+    """
+    Step 1: Flight & seat selection + passenger info
+    - Locks the flight row using FOR UPDATE to ensure concurrency safety.
+    - Checks if seat is valid / already booked.
+    - Decrements seats_available and creates a booking with status 'Reserved'.
+    - Returns PNR (reservation token).
+    """
+    # Start transaction
+    try:
+        # Lock flight row for update to avoid race conditions
+        flight = db.query(Flight).filter(Flight.Flight_id == payload.flight_id).with_for_update().first()
+        if not flight:
+            raise HTTPException(status_code=404, detail="Flight not found")
+        if not flight.total_seats or not (1 <= payload.seat_no <= flight.total_seats):
+            raise HTTPException(status_code=400, detail="Invalid seat number for this flight")
+
+        # check seat already taken (any non-cancelled booking)
+        existing = db.query(Booking).filter(
+            Booking.flight_id == payload.flight_id,
+            Booking.seat_no == payload.seat_no,
+            Booking.status != "Cancelled"
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Seat already booked")
+
+        if flight.seats_available is None:
+            flight.seats_available = max(0, flight.total_seats - 1)
+        elif flight.seats_available <= 0:
+            raise HTTPException(status_code=400, detail="No seats available")
+
+        # decrement seats and create reservation
+        flight.seats_available = max(0, flight.seats_available - 1)
+        db.flush()
+
+        pnr = generate_pnr()
+        trans_id = payload.trans_id or generate_trans_id()
+        # price snapshot using dynamic price at the time of reservation
+        price_val = calculate_dynamic_price(flight.base_fare, flight.seats_available, flight.total_seats or 1, flight.departure, flight.airline_name or "")
+
+        booking = Booking(
+            trans_id=trans_id,
+            flight_no=flight.Flight_no,
+            flight_id=flight.Flight_id,
+            passenger_fullname=payload.passenger_fullname,
+            passenger_contact=payload.passenger_contact,
+            seat_no=payload.seat_no,
+            pnr=pnr,
+            status="Reserved",
+            price=decimal.Decimal(str(price_val)),
+            created_at=datetime.utcnow()
+        )
+        db.add(booking)
+        db.commit()
+        db.refresh(booking)
+        return BookingReserveOut(
+            pnr=booking.pnr,
+            flight_id=booking.flight_id,
+            flight_no=booking.flight_no,
+            seat_no=booking.seat_no,
+            status=booking.status,
+            message="Seat reserved. Proceed to payment using the PNR."
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Reservation failed: {e}")
+
+# 2) Payment simulation endpoint - locks booking and flight row; on payment failure restores seat
+@app.post("/bookings/pay/{pnr}")
+def simulate_payment(pnr: str, db: Session = Depends(get_db)):
+    """
+    Simulates payment for a reserved booking.
+    If payment succeeds -> status becomes Confirmed
+    If fails -> booking status 'Payment Failed' and seat is restored (seats_available +1)
+    """
+    try:
+        # lock booking row
+        booking = db.query(Booking).filter(Booking.pnr == pnr).with_for_update().first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        if booking.status == "Confirmed":
+            return {"message": f"Booking {pnr} already confirmed", "status": booking.status, "pnr": booking.pnr}
+        if booking.status == "Cancelled":
+            raise HTTPException(status_code=400, detail="Booking is cancelled")
+        # fetch and lock flight row (if available)
+        flight = db.query(Flight).filter(Flight.Flight_id == booking.flight_id).with_for_update().first()
+        # simulate payment
+        payment_success = random.choice([True, False, True])  # slight bias toward success
+        if payment_success:
+            booking.status = "Confirmed"
+            # update price snapshot to current dynamic price (optional; we use reserved price)
+            # booking.price = decimal.Decimal(str(calculate_dynamic_price(flight.base_fare, flight.seats_available or 0, flight.total_seats or 1, flight.departure, flight.airline_name or "")))
+            booking.trans_id = booking.trans_id or generate_trans_id()
+            db.commit()
+            return {"message": f"Payment successful for booking {pnr}", "status": booking.status, "pnr": booking.pnr}
+        else:
+            # On payment failure, mark accordingly and restore seat
+            booking.status = "Payment Failed"
+            if flight:
+                flight.seats_available = min(flight.total_seats or 0, (flight.seats_available or 0) + 1)
+            db.commit()
+            return {"message": f"Payment failed for booking {pnr}", "status": booking.status}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Payment simulation failed: {e}")
+
+# 3) Confirm booking directly (rarely used if payment handled elsewhere)
+@app.post("/bookings/confirm/{pnr}")
+def confirm_booking(pnr: str, db: Session = Depends(get_db)):
+    try:
+        booking = db.query(Booking).filter(Booking.pnr == pnr).with_for_update().first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        if booking.status == "Confirmed":
+            return {"message": "Already confirmed", "pnr": pnr}
+        if booking.status == "Cancelled":
+            raise HTTPException(status_code=400, detail="Cannot confirm a cancelled booking")
+        booking.status = "Confirmed"
+        db.commit()
+        return {"message":"Booking confirmed", "pnr": pnr}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Confirm failed: {e}")
+
+# 4) Cancel a booking (restores seat if it was holding one)
+@app.delete("/bookings/cancel/{pnr}")
+def cancel_booking(pnr: str, db: Session = Depends(get_db)):
+    try:
+        booking = db.query(Booking).filter(Booking.pnr == pnr).with_for_update().first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        if booking.status == "Cancelled":
+            return {"message": f"Booking {pnr} already cancelled"}
+        # restore seat if it was reserved/confirmed/paid
+        flight = db.query(Flight).filter(Flight.Flight_id == booking.flight_id).with_for_update().first()
+        if flight:
+            flight.seats_available = min((flight.total_seats or 0), (flight.seats_available or 0) + 1)
+        booking.status = "Cancelled"
+        db.commit()
+        return {"message": f"Booking {pnr} cancelled", "pnr": pnr, "flight_id": booking.flight_id}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Cancellation failed: {e}")
+
+# 5) Booking retrieval endpoints
 @app.get("/bookings/", response_model=List[BookingOutSchema])
-def list_bookings():
-    db = SessionLocal()
+def list_bookings(db: Session = Depends(get_db)):
     bk = db.query(Booking).all()
-    out = [BookingOutSchema(**{
-        "trans_id":b.trans_id, "flight_no":b.flight_no,
-        "passenger_fullname":b.passenger_fullname, "passenger_contact":b.passenger_contact,
-        "seat_no":b.seat_no, "origin":b.origin, "destination":b.destination
-    }) for b in bk]
-    db.close(); return out
-
-@app.post("/bookings/list", response_model=List[BookingOutSchema])
-def list_bookings_post(): return list_bookings()
-
-@app.post("/bookings/", response_model=BookingOutSchema)
-def create_booking_post(b: BookingCreate):
-    db = SessionLocal()
-    flight = db.query(Flight).filter(Flight.Flight_no==b.flight_no).first()
-    if not flight: db.close(); raise HTTPException(404, "Flight not found")
-    if b.seat_no < 1 or b.seat_no > flight.total_seats:
-        db.close(); raise HTTPException(400, "Invalid seat number")
-    if db.query(Booking).filter(Booking.flight_no==b.flight_no, Booking.seat_no==b.seat_no).first():
-        db.close(); raise HTTPException(400, "Seat already booked")
-    booking = Booking(
-        trans_id=b.trans_id, flight_no=b.flight_no,
-        passenger_fullname=b.passenger_fullname, passenger_contact=b.passenger_contact,
-        seat_no=b.seat_no, origin=flight.origin, destination=flight.destination
-    )
-    db.add(booking)
-    flight.seats_available = max(flight.seats_available-1, 0)
-    db.commit(); db.refresh(booking)
-    out = BookingOutSchema(**{
-        "trans_id":booking.trans_id, "flight_no":booking.flight_no,
-        "passenger_fullname":booking.passenger_fullname, "passenger_contact":booking.passenger_contact,
-        "seat_no":booking.seat_no, "origin":booking.origin, "destination":booking.destination
-    })
-    db.close()
+    out = []
+    for b in bk:
+        out.append(BookingOutSchema(
+            trans_id=b.trans_id,
+            flight_no=b.flight_no or "",
+            passenger_fullname=b.passenger_fullname,
+            passenger_contact=b.passenger_contact,
+            seat_no=b.seat_no,
+            origin=None,
+            destination=None,
+            pnr=b.pnr,
+            status=b.status,
+            price=float(b.price) if b.price is not None else None
+        ))
     return out
 
-# External schedule
-@app.get("external/airline-schedu/le", response_model=ExternalScheduleOutSchema)
-def external_schedule_get(origin: str, destination: str): 
-    return external_schedule_mock(origin, destination)
+@app.get("/bookings/{pnr}", response_model=BookingOutSchema)
+def get_booking_by_pnr(pnr: str, db: Session = Depends(get_db)):
+    b = db.query(Booking).filter(Booking.pnr == pnr).first()
+    if not b:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return BookingOutSchema(
+        trans_id=b.trans_id,
+        flight_no=b.flight_no or "",
+        passenger_fullname=b.passenger_fullname,
+        passenger_contact=b.passenger_contact,
+        seat_no=b.seat_no,
+        origin=None,
+        destination=None,
+        pnr=b.pnr,
+        status=b.status,
+        price=float(b.price) if b.price is not None else None
+    )
 
-@app.post("/external/airline-schedule", response_model=ExternalScheduleOutSchema)
-def external_schedule_post(payload: AirlineSchedulePostSchema):
-    return external_schedule_mock(payload.origin, payload.destination, payload.airline_name)
-
-# Fare history
+# 6) Booking history per flight (keeps original fare-history endpoint)
 @app.get("/fare-history/{flight_no}", response_model=List[FareHistoryOutSchema])
-def fare_history(flight_no: str, limit: int = 10):
-    db = SessionLocal()
+def fare_history(flight_no: str, limit: int = 10, db: Session = Depends(get_db)):
     rows = db.query(FareHistory).filter(FareHistory.flight_no==flight_no).order_by(FareHistory.timestamp.desc()).limit(limit).all()
-    db.close()
     return [{"timestamp":r.timestamp,"fare":float(r.fare)} for r in rows]
 
-@app.post("/fare-history", response_model=List[FareHistoryOutSchema])
-def fare_history_post(payload: FareHistoryPostSchema):
-    return fare_history(payload.flight_no, payload.limit)
+
