@@ -1,16 +1,11 @@
--- Use database
 USE FlightS_booking;
 
--- Drop tables if they exist (clean slate)
 DROP TABLE IF EXISTS bookings;
 DROP TABLE IF EXISTS passengers;
 DROP TABLE IF EXISTS Flight;
 DROP TABLE IF EXISTS airports;
 DROP TABLE IF EXISTS fare_history;
 
--- ==============================================================
--- 1) Airports table
--- ==============================================================
 CREATE TABLE airports (
     airport_id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -197,3 +192,4 @@ SELECT * FROM Flight;
 SELECT * FROM passengers;
 SELECT * FROM bookings;
 SELECT * FROM fare_history;
+
