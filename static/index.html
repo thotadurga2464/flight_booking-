@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flight Booking App</title>
+  <link rel="stylesheet" href="static/index.css" />
+</head>
+<body>
+  <h1>✈️ Flight Booking</h1>
+  <button onclick="loadFlights()">Load Flights</button>
+
+  <table id="flights">
+    <thead>
+      <tr>
+        <th>Flight No</th>
+        <th>Origin</th>
+        <th>Destination</th>
+        <th>Departure</th>
+        <th>Arrival</th>
+        <th>Price</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    async function loadFlights() {
+      try {
+        const res = await fetch("http://127.0.0.1:8000/flights");
+        const data = await res.json();
+
+        const tableBody = document.querySelector("#flights tbody");
+        tableBody.innerHTML = "";
+
+        data.forEach(f => {
+          const row = `
+            <tr>
+              <td>${f.Flight_no}</td>
+              <td>${f.origin}</td>
+              <td>${f.destination}</td>
+              <td>${new Date(f.departure).toLocaleString()}</td>
+              <td>${new Date(f.arrival).toLocaleString()}</td>
+              <td>₹${f.dynamic_price}</td>
+            </tr>
+          `;
+          tableBody.innerHTML += row;
+        });
+      } catch (err) {
+        console.error("Error loading flights:", err);
+        alert("Could not load flight data. Make sure backend is running.");
+      }
+    }
+  </script>
+</body>
+</html>
